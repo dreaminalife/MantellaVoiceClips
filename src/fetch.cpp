@@ -286,6 +286,22 @@ namespace fetch
 			std::mt19937      _rng;
 		};
 
+		// The source (loose, or an archive) most of these lines are played from
+		std::uint16_t MostCommonSource(const std::vector<const Line*>& a_lines)
+		{
+			std::unordered_map<std::uint16_t, std::size_t> counts;
+			std::uint16_t                                  best = 0;
+			std::size_t                                    bestCount = 0;
+			for (const auto* line : a_lines) {
+				const auto count = ++counts[line->sourceIndex];
+				if (count > bestCount) {
+					best = line->sourceIndex;
+					bestCount = count;
+				}
+			}
+			return best;
+		}
+
 		void PickLines(const Request& a_request, Outcome& a_outcome)
 		{
 			const auto& index = voiceindex::Get();
@@ -357,9 +373,15 @@ namespace fetch
 				}
 				std::erase_if(own, [&](const Line* a_line) { return taken.contains(voiceindex::PathOf(index, voiceType, *a_line)); });
 				npcClips = picker.Pick(own, "npc");
-				if (a_request.npcLines == "if_different" && !npcClips.empty() && !voiceClips.empty() && npcClips.front().sourceIndex == voiceClips.front().sourceIndex) {
-					logs::info("[{}] The NPC's line comes from the same place as the shared line ({}), not delivered", a_request.id, npcClips.front().source);
-					npcClips.clear();
+				if (a_request.npcLines == "if_different" && !npcClips.empty() && !voiceClips.empty()) {
+					// Where most of each set comes from, not one random line: a patch that fixes a few shared lines (the Unofficial Patch)
+					// would otherwise make a vanilla NPC look re-voiced whenever the random shared line was one of them
+					const auto ownSource = MostCommonSource(own);
+					const auto sharedSource = shared.empty() ? voiceClips.front().sourceIndex : MostCommonSource(shared);
+					if (ownSource == sharedSource) {
+						logs::info("[{}] The NPC's lines come from the same place as the shared lines ({}), not delivered", a_request.id, index.sources[ownSource]);
+						npcClips.clear();
+					}
 				}
 			}
 			a_outcome.clips = std::move(voiceClips);

@@ -37,13 +37,20 @@ namespace
 				request = std::move(g_queue.front());
 				g_queue.pop_front();
 			}
+			// Nothing may escape this thread: an uncaught exception would end the game
 			int count = -1;
 			try {
 				count = fetch::Run(request);
 			} catch (const std::exception& e) {
 				logs::error("[{}] {}", request.id, e.what());
+			} catch (...) {
+				logs::error("[{}] Failed", request.id);
 			}
-			SendDone(request.id, count);
+			try {
+				SendDone(request.id, count);
+			} catch (...) {
+				logs::error("[{}] Could not tell the game the request is done", request.id);
+			}
 		}
 	}
 
@@ -74,8 +81,13 @@ namespace
 		logs::info("[{}] Queued ({} waiting)", request->id, g_queue.size());
 		g_queue.push_back(std::move(*request));
 		if (!g_working) {
-			g_working = true;
-			std::thread(Work).detach();
+			try {
+				std::thread(Work).detach();
+				g_working = true;  // The worker waits for this lock before it looks at the queue
+			} catch (const std::exception& e) {
+				// The request stays queued: the next one tries to start the worker again
+				logs::error("[{}] Could not start the worker: {}", g_queue.back().id, e.what());
+			}
 		}
 		return true;
 	}
