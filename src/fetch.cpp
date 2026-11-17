@@ -366,7 +366,7 @@ namespace fetch
 				// sound\voice\<plugin>\<voice type>\<file>
 				std::vector<std::string> parts;
 				for (std::size_t start = 0; start <= path.size();) {
-					const auto end = std::min(path.find('\\', start), path.size());
+					const auto end = (std::min)(path.find('\\', start), path.size());
 					parts.push_back(path.substr(start, end - start));
 					start = end + 1;
 				}
