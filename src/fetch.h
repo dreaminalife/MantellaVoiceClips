@@ -25,6 +25,7 @@ namespace fetch
 		std::vector<std::string> skipWords;  // Lowercase
 		std::vector<std::string> exclude;    // Lowercase
 		std::vector<RequestLine> lines;      // When not empty, copy exactly these
+		bool                     listVoiceTypes{ false };  // Copy nothing: list the voice types the game's NPCs use instead
 	};
 
 	// Nothing if the text isn't a JSON object with at least an id and a dest

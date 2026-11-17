@@ -245,6 +245,7 @@ namespace fetch
 			std::string        message;
 			std::vector<Clip>  clips;
 			std::vector<std::string> missing;
+			std::vector<std::pair<std::string, std::size_t>> voiceTypes;  // For a list request: editor ID, NPCs using it
 		};
 
 		std::string DisplayPluginName(const std::string& a_folder)
@@ -459,6 +460,43 @@ namespace fetch
 			}
 		}
 
+		// The voice types the game's NPCs use and that have voice lines, most used first. An NPC without a voice type of its
+		// own (most leveled ones) speaks with its race's default for its sex
+		void ListVoiceTypes(const Request& a_request, Outcome& a_outcome)
+		{
+			auto* dataHandler = RE::TESDataHandler::GetSingleton();
+			if (!dataHandler) {
+				throw std::runtime_error("the game's data isn't loaded");
+			}
+			std::unordered_map<std::string, std::pair<std::string, std::size_t>> counts;  // Lowercase -> editor ID, NPCs
+			for (auto* npc : dataHandler->GetFormArray<RE::TESNPC>()) {
+				if (!npc) {
+					continue;
+				}
+				const RE::BGSVoiceType* voice = npc->voiceType;
+				if (!voice && npc->race) {
+					voice = npc->race->defaultVoiceTypes[npc->IsFemale() ? RE::SEXES::kFemale : RE::SEXES::kMale];
+				}
+				const char* editorID = voice ? voice->GetFormEditorID() : nullptr;
+				if (!editorID || !*editorID) {
+					continue;
+				}
+				auto& entry = counts[voiceindex::ToLower(editorID)];
+				if (entry.first.empty()) {
+					entry.first = editorID;
+				}
+				++entry.second;
+			}
+			const auto& index = voiceindex::Get();
+			for (auto& [lower, entry] : counts) {
+				if (index.byVoiceType.contains(lower)) {
+					a_outcome.voiceTypes.push_back(std::move(entry));
+				}
+			}
+			std::ranges::sort(a_outcome.voiceTypes, [](const auto& a, const auto& b) { return a.second != b.second ? a.second > b.second : a.first < b.first; });
+			logs::info("[{}] {} voice types used by NPCs have lines, out of {}", a_request.id, a_outcome.voiceTypes.size(), counts.size());
+		}
+
 		// Copies exactly the lines asked for, each only if it can still be opened
 		void CheckLines(const Request& a_request, Outcome& a_outcome)
 		{
@@ -519,7 +557,14 @@ namespace fetch
 					{ "source", clip.source },
 					{ "seconds", std::round(clip.info.seconds * 100.0) / 100.0 } });
 			}
-			const json result = { { "id", a_request.id }, { "status", a_outcome.status }, { "message", a_outcome.message }, { "clips", clips }, { "missing", a_outcome.missing } };
+			json result = { { "id", a_request.id }, { "status", a_outcome.status }, { "message", a_outcome.message }, { "clips", clips }, { "missing", a_outcome.missing } };
+			if (a_request.listVoiceTypes) {
+				json voiceTypes = json::array();
+				for (const auto& [name, npcs] : a_outcome.voiceTypes) {
+					voiceTypes.push_back(json{ { "name", name }, { "npcs", npcs } });
+				}
+				result["voice_types"] = std::move(voiceTypes);
+			}
 
 			// Written last and renamed into place, so result.json existing means the request is done
 			const auto temporary = a_folder / "result.json.tmp";
@@ -563,7 +608,8 @@ namespace fetch
 			for (const auto& line : j.value("lines", json::array())) {
 				request.lines.push_back({ line.value("path", ""s), line.value("for", "voice_type"s) });
 			}
-			if (request.id.empty() || request.dest.empty() || (request.lines.empty() && request.voiceType.empty())) {
+			request.listVoiceTypes = j.value("list_voice_types", false);
+			if (request.id.empty() || request.dest.empty() || (request.lines.empty() && request.voiceType.empty() && !request.listVoiceTypes)) {
 				return std::nullopt;
 			}
 			return request;
@@ -607,6 +653,13 @@ namespace fetch
 			fs::create_directories(folder);
 			fs::remove(folder / "result.json");  // A leftover from an earlier run would say "done" too soon
 
+			if (a_request.listVoiceTypes) {
+				ListVoiceTypes(a_request, outcome);
+				outcome.status = outcome.voiceTypes.empty() ? "nothing_found" : "ok";
+				WriteResult(a_request, folder, outcome);
+				logs::info("[{}] Done: {} voice types", a_request.id, outcome.voiceTypes.size());
+				return static_cast<int>(outcome.voiceTypes.size());
+			}
 			if (a_request.lines.empty()) {
 				PickLines(a_request, outcome);
 			} else {
