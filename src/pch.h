@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <optional>
 #include <random>

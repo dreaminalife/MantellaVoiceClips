@@ -460,21 +460,24 @@ namespace fetch
 			}
 		}
 
-		// The voice types the game's NPCs use and that have voice lines, most used first. An NPC without a voice type of its
-		// own (most leveled ones) speaks with its race's default for its sex
-		void ListVoiceTypes(const Request& a_request, Outcome& a_outcome)
+		using VoiceTypeCounts = std::unordered_map<std::string, std::pair<std::string, std::size_t>>;  // Lowercase -> editor ID, NPCs
+
+		// Counts the voice types of the game's people. Creatures (dragons, draugr, animals) are left out: their races lack ActorTypeNPC.
+		// An NPC without a voice type of its own (most leveled ones) speaks with its race's default for its sex.
+		// Run on the main thread: the game's list of NPCs is only read where the game itself changes it
+		VoiceTypeCounts CountVoiceTypes()
 		{
+			VoiceTypeCounts counts;
 			auto* dataHandler = RE::TESDataHandler::GetSingleton();
 			if (!dataHandler) {
-				throw std::runtime_error("the game's data isn't loaded");
+				return counts;
 			}
-			std::unordered_map<std::string, std::pair<std::string, std::size_t>> counts;  // Lowercase -> editor ID, NPCs
 			for (auto* npc : dataHandler->GetFormArray<RE::TESNPC>()) {
-				if (!npc) {
+				if (!npc || !npc->race || !npc->race->HasKeywordString("ActorTypeNPC")) {
 					continue;
 				}
 				const RE::BGSVoiceType* voice = npc->voiceType;
-				if (!voice && npc->race) {
+				if (!voice) {
 					voice = npc->race->defaultVoiceTypes[npc->IsFemale() ? RE::SEXES::kFemale : RE::SEXES::kMale];
 				}
 				const char* editorID = voice ? voice->GetFormEditorID() : nullptr;
@@ -487,6 +490,26 @@ namespace fetch
 				}
 				++entry.second;
 			}
+			return counts;
+		}
+
+		// The voice types the game's people use and that have voice lines, most used first
+		void ListVoiceTypes(const Request& a_request, Outcome& a_outcome)
+		{
+			// Counted on the main thread, a few milliseconds; the rest stays on this worker thread
+			auto promise = std::make_shared<std::promise<VoiceTypeCounts>>();
+			auto future = promise->get_future();
+			SKSE::GetTaskInterface()->AddTask([promise]() {
+				try {
+					promise->set_value(CountVoiceTypes());
+				} catch (...) {
+					promise->set_exception(std::current_exception());
+				}
+			});
+			if (future.wait_for(std::chrono::seconds(60)) != std::future_status::ready) {
+				throw std::runtime_error("the game didn't get to counting its voice types (paused for a minute?)");
+			}
+			auto counts = future.get();
 			const auto& index = voiceindex::Get();
 			for (auto& [lower, entry] : counts) {
 				if (index.byVoiceType.contains(lower)) {

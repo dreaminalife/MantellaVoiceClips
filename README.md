@@ -45,7 +45,7 @@ When a request is finished the plugin sends the mod event `Mantella_VoiceClipsDo
 - `count`: lines to deliver per kind (default 4). `min_seconds`, `max_seconds`: only lines in this length range.
 - `skip_words`: lines whose file name contains one of these are dropped. `exclude`: lines never to deliver, as `<plugin folder>|<INFO id, 8 hex digits>`, lowercase.
 - `lines`: if not empty, the picking fields are ignored and exactly these lines are copied, each only if it can still be opened: `{"path": "sound\voice\skyrim.esm\femaleeventoned\dialoguesolitude__000dd60f_1.fuz", "for": "voice_type"}` (`for` is `voice_type` or `npc`). The ones that can't be opened are listed in `missing`.
-- `list_voice_types`: if true, nothing is copied. `result.json` gets `"voice_types": [{"name": "MaleNord", "npcs": 512}, ...]`: every voice type the game's NPCs use (an NPC without one uses its race's default for its sex) that has voice lines, most used first. Only `id` and `dest` are needed with it.
+- `list_voice_types`: if true, nothing is copied. `result.json` gets `"voice_types": [{"name": "MaleNord", "npcs": 512}, ...]`: every voice type the game's people use (an NPC without one uses its race's default for its sex; creatures, whose race lacks the ActorTypeNPC keyword, are left out) that has voice lines, most used first. The NPCs are counted on the game's main thread. Only `id` and `dest` are needed with it.
 
 Line length is worked out from the file headers without decoding the sound.
 
