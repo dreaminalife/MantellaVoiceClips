@@ -253,6 +253,19 @@ namespace fetch
 			return it != g_pluginNames.end() ? it->second : a_folder;
 		}
 
+		// The game's own plugins. Their lines are the original recordings, or a voice replacer's copies of them at the same paths.
+		// Lines a mod adds sit in that mod's own folder and are often stitched together from other lines or made with AI
+		bool IsGamePlugin(std::string_view a_lowerName)
+		{
+			return a_lowerName == "skyrim.esm" || a_lowerName == "update.esm" || a_lowerName == "dawnguard.esm" || a_lowerName == "hearthfires.esm" ||
+			       a_lowerName == "dragonborn.esm";
+		}
+
+		bool IsGameLine(const Index& a_index, const Line& a_line)
+		{
+			return IsGamePlugin(a_index.plugins[a_line.pluginIndex]);
+		}
+
 		class Picker
 		{
 		public:
@@ -260,10 +273,12 @@ namespace fetch
 				_request(a_request), _index(a_index), _voiceType(a_voiceType), _rng(std::random_device{}())
 			{}
 
-			// Shuffles the pool, then reads headers until there are enough lines of the right length
+			// Shuffles the pool, puts the game's own lines first, then reads headers until there are enough lines of the right length.
+			// Lines added by mods are only taken when the game's own lines run out
 			std::vector<Clip> Pick(std::vector<const Line*> a_pool, const char* a_forWhat)
 			{
 				std::ranges::shuffle(a_pool, _rng);
+				std::ranges::stable_partition(a_pool, [&](const Line* a_line) { return IsGameLine(_index, *a_line); });
 				std::vector<Clip> picked;
 				for (const auto* line : a_pool) {
 					if (picked.size() >= _request.count) {
@@ -300,6 +315,65 @@ namespace fetch
 				}
 			}
 			return best;
+		}
+
+		std::uint32_t MostCommonPlugin(const std::vector<const Line*>& a_lines)
+		{
+			std::unordered_map<std::uint32_t, std::size_t> counts;
+			std::uint32_t                                  best = 0;
+			std::size_t                                    bestCount = 0;
+			for (const auto* line : a_lines) {
+				const auto count = ++counts[line->pluginIndex];
+				if (count > bestCount) {
+					best = line->pluginIndex;
+					bestCount = count;
+				}
+			}
+			return best;
+		}
+
+		std::vector<const Line*> GameLines(const Index& a_index, const std::vector<const Line*>& a_lines)
+		{
+			std::vector<const Line*> result;
+			std::ranges::copy_if(a_lines, std::back_inserter(result), [&](const Line* a_line) { return IsGameLine(a_index, *a_line); });
+			return result;
+		}
+
+		// Whether a voice mod changed this NPC's voice and not their voice type's: their own lines are played from a different
+		// place (a loose file or another archive) than the shared lines. Judged by the most common place, so a patch that fixes a
+		// few lines (the Unofficial Patch) doesn't count. Lines that mods add (follower dialogue, comments) live in the mod's own
+		// folder as loose files and say nothing about the voice, so the game's own lines are compared whenever the NPC has any
+		bool SoundsDifferent(const Request& a_request, const Index& a_index, const std::vector<const Line*>& a_own, const std::vector<const Line*>& a_shared,
+			const std::vector<Clip>& a_voiceClips)
+		{
+			const auto ownGame = GameLines(a_index, a_own);
+			if (!ownGame.empty()) {
+				const auto sharedGame = GameLines(a_index, a_shared);
+				if (sharedGame.empty()) {
+					// A voice type of the NPC's own in the game (Serana): the voice type's clip is already theirs
+					logs::info("[{}] The voice type has no shared lines in the game's own plugins, so it is the NPC's voice", a_request.id);
+					return false;
+				}
+				// Within the same plugin's lines where possible: the game's own lines for Dawnguard NPCs are in Dawnguard's archive
+				const auto plugin = MostCommonPlugin(ownGame);
+				std::vector<const Line*> sharedSamePlugin;
+				std::ranges::copy_if(sharedGame, std::back_inserter(sharedSamePlugin), [&](const Line* a_line) { return a_line->pluginIndex == plugin; });
+				const auto ownSource = MostCommonSource(ownGame);
+				const auto sharedSource = MostCommonSource(sharedSamePlugin.empty() ? sharedGame : sharedSamePlugin);
+				logs::info("[{}] The NPC's lines in the game's own plugins are played from {}, the shared ones from {}", a_request.id, a_index.sources[ownSource],
+					a_index.sources[sharedSource]);
+				return ownSource != sharedSource;
+			}
+			if (IsGamePlugin(voiceindex::ToLower(a_request.npcPlugin))) {
+				// An NPC of the game whose only own lines were added by mods: those mods didn't change the voice
+				logs::info("[{}] The NPC's own lines all come from mods, which add lines but keep the voice", a_request.id);
+				return false;
+			}
+			// An NPC added by a mod: their own lines vs the voice type's
+			const auto ownSource = MostCommonSource(a_own);
+			const auto sharedSource = a_shared.empty() ? a_voiceClips.front().sourceIndex : MostCommonSource(a_shared);
+			logs::info("[{}] The NPC's lines are played from {}, the shared ones from {}", a_request.id, a_index.sources[ownSource], a_index.sources[sharedSource]);
+			return ownSource != sharedSource;
 		}
 
 		void PickLines(const Request& a_request, Outcome& a_outcome)
@@ -373,15 +447,9 @@ namespace fetch
 				}
 				std::erase_if(own, [&](const Line* a_line) { return taken.contains(voiceindex::PathOf(index, voiceType, *a_line)); });
 				npcClips = picker.Pick(own, "npc");
-				if (a_request.npcLines == "if_different" && !npcClips.empty() && !voiceClips.empty()) {
-					// Where most of each set comes from, not one random line: a patch that fixes a few shared lines (the Unofficial Patch)
-					// would otherwise make a vanilla NPC look re-voiced whenever the random shared line was one of them
-					const auto ownSource = MostCommonSource(own);
-					const auto sharedSource = shared.empty() ? voiceClips.front().sourceIndex : MostCommonSource(shared);
-					if (ownSource == sharedSource) {
-						logs::info("[{}] The NPC's lines come from the same place as the shared lines ({}), not delivered", a_request.id, index.sources[ownSource]);
-						npcClips.clear();
-					}
+				if (a_request.npcLines == "if_different" && !npcClips.empty() && !voiceClips.empty() && !SoundsDifferent(a_request, index, own, shared, voiceClips)) {
+					logs::info("[{}] The NPC sounds like the voice type: their own lines are not delivered", a_request.id);
+					npcClips.clear();
 				}
 			}
 			a_outcome.clips = std::move(voiceClips);
