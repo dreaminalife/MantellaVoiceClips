@@ -23,6 +23,9 @@ namespace voiceindex
 	// Built on first use, then kept. Not thread safe: only the worker thread calls it
 	const Index& Get();
 
+	// The loaded plugins in load order, lowercase, so archives can be ranked the way the game loads them. Call before the first Get
+	void SetLoadOrder(std::vector<std::string> a_lowerPluginNames);
+
 	std::string ToLower(std::string_view a_text);
 
 	// Path relative to Data, lowercase with backslashes, as the game's resource system takes it

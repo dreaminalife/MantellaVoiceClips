@@ -6,6 +6,11 @@ namespace voiceindex
 {
 	namespace
 	{
+		std::vector<std::string> g_loadOrder;  // Lowercase plugin names, in load order
+	}
+
+	namespace
+	{
 		namespace fs = std::filesystem;
 
 		using PluginIndexes = std::unordered_map<std::string, std::uint32_t>;
@@ -179,8 +184,8 @@ namespace voiceindex
 			}
 			ScanLooseFiles(index, pluginIndexes, *data);
 
-			// Archives in alphabetical order: when two list the same file the first one named wins here
-			// (the game itself goes by its archive load order)
+			// The game loads a plugin's archives (<plugin>.bsa, <plugin> - <anything>.bsa) in plugin load order, after the ones its
+			// ini lists, and a later archive's copy of a file wins. Ranked last loaded first, so the copy kept below is the one the game plays
 			std::vector<fs::path> archives;
 			const fs::directory_iterator end;
 			std::error_code              ec;
@@ -189,7 +194,21 @@ namespace voiceindex
 					archives.push_back(it->path());
 				}
 			}
-			std::ranges::sort(archives, {}, [](const fs::path& p) { return ToLower(p.filename().string()); });
+			const auto rank = [](const fs::path& a_archive) -> std::size_t {
+				const auto name = ToLower(a_archive.stem().string());
+				for (std::size_t i = g_loadOrder.size(); i-- > 0;) {
+					const auto& plugin = g_loadOrder[i];
+					const auto  stem = plugin.substr(0, plugin.rfind('.'));
+					if (name == stem || name.starts_with(stem + " - ")) {
+						return i + 1;
+					}
+				}
+				return 0;  // An archive the ini lists (or one the game doesn't load)
+			};
+			std::ranges::sort(archives, [&](const fs::path& a, const fs::path& b) {
+				const auto rankA = rank(a), rankB = rank(b);
+				return rankA != rankB ? rankA > rankB : ToLower(a.filename().string()) < ToLower(b.filename().string());
+			});
 			for (const auto& archive : archives) {
 				index.sources.push_back(archive.filename().string());
 				ScanArchive(index, pluginIndexes, archive, static_cast<std::uint16_t>(index.sources.size() - 1));
@@ -207,6 +226,11 @@ namespace voiceindex
 			logs::info("Voice line index: {} lines, {} voice types, {} plugin folders, {} archives", total, index.byVoiceType.size(), index.plugins.size(), archives.size());
 			return index;
 		}
+	}
+
+	void SetLoadOrder(std::vector<std::string> a_lowerPluginNames)
+	{
+		g_loadOrder = std::move(a_lowerPluginNames);
 	}
 
 	const Index& Get()

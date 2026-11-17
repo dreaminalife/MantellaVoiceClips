@@ -218,6 +218,14 @@ namespace fetch
 			return forNpc ? Owner::kNpc : (anyGetIsID ? Owner::kOther : Owner::kShared);
 		}
 
+		// The INFO's form ID inside its plugin. A voice file's name can carry a load order byte (an override, or FE for a light plugin)
+		// that LookupForm would add to the plugin's own
+		std::uint32_t LocalInfoID(RE::TESDataHandler& a_dataHandler, const std::string& a_plugin, std::uint32_t a_infoID)
+		{
+			const auto* file = a_dataHandler.LookupModByName(a_plugin);
+			return a_infoID & (file && file->IsLight() ? 0xFFFu : 0xFFFFFFu);
+		}
+
 		// ---- One request ----
 
 		struct Clip
@@ -317,7 +325,7 @@ namespace fetch
 					auto owner = Owner::kGone;
 					const auto realName = g_pluginNames.find(index.plugins[line.pluginIndex]);
 					if (dataHandler && realName != g_pluginNames.end()) {
-						if (const auto* info = dataHandler->LookupForm<RE::TESTopicInfo>(line.infoID, realName->second)) {
+						if (const auto* info = dataHandler->LookupForm<RE::TESTopicInfo>(LocalInfoID(*dataHandler, realName->second, line.infoID), realName->second)) {
 							owner = ClassifyInfo(*info, npc);
 						}
 					}
@@ -342,6 +350,12 @@ namespace fetch
 				}
 			}
 			if (wantNpc) {
+				// A unique voice type's clip may already be one of the NPC's own lines: never deliver the same line twice
+				std::unordered_set<std::string> taken;
+				for (const auto& clip : voiceClips) {
+					taken.insert(clip.path);
+				}
+				std::erase_if(own, [&](const Line* a_line) { return taken.contains(voiceindex::PathOf(index, voiceType, *a_line)); });
 				npcClips = picker.Pick(own, "npc");
 				if (a_request.npcLines == "if_different" && !npcClips.empty() && !voiceClips.empty() && npcClips.front().sourceIndex == voiceClips.front().sourceIndex) {
 					logs::info("[{}] The NPC's line comes from the same place as the shared line ({}), not delivered", a_request.id, npcClips.front().source);
@@ -471,14 +485,24 @@ namespace fetch
 	void ReadPluginNames()
 	{
 		g_pluginNames.clear();
+		std::vector<std::pair<std::uint32_t, std::string>> loaded;  // Load order position, lowercase name
 		if (auto* dataHandler = RE::TESDataHandler::GetSingleton()) {
 			for (const auto* file : dataHandler->files) {
-				if (file) {
+				if (file && file->compileIndex != 0xFF) {
 					const std::string name(file->GetFilename());
 					g_pluginNames.emplace(voiceindex::ToLower(name), name);
+					// Full plugins by their load order index; light ones (all at FE) after them, by their own index
+					const auto position = file->IsLight() ? (0xFE000u | file->smallFileCompileIndex) : (static_cast<std::uint32_t>(file->compileIndex) << 12);
+					loaded.emplace_back(position, voiceindex::ToLower(name));
 				}
 			}
 		}
+		std::ranges::sort(loaded);
+		std::vector<std::string> loadOrder;
+		for (auto& [position, name] : loaded) {
+			loadOrder.push_back(std::move(name));
+		}
+		voiceindex::SetLoadOrder(std::move(loadOrder));
 		logs::info("Found {} loaded plugins", g_pluginNames.size());
 	}
 
